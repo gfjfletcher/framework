@@ -146,15 +146,20 @@ class Container implements ContainerInterface, ArrayAccess
      * Wrap given concrete binding type inside closure.
      *
      * @param string $concrete
+     * @param string $abstract
      *
      * @return \Closure
      */
-    protected function makeClosure(string $concrete): Closure
+    protected function makeClosure(string $concrete, string $abstract): Closure
     {
         // Use the container as an argument so the given concrete type which is
         // usually a class name can be resolved during the "make/resolve" process.
-        return function ($container) use ($concrete) {
-            return $container->build($concrete);
+        return function ($container, array $parameters = []) use ($concrete, $abstract) {
+            if ($concrete == $abstract) {
+                return $container->build($concrete);
+            }
+
+            return $container->resolve($concrete, $parameters);
         };
     }
 
@@ -207,6 +212,25 @@ class Container implements ContainerInterface, ArrayAccess
      */
     protected function resolve(string $abstract, array $parameters = [])
     {
+        if (array_key_exists($abstract, $this->instances)) {
+            return $this->instances[$abstract];
+        }
+
+        $this->parameterOverride[] = $parameters;
+
+        $concrete = $this->getConcrete($abstract);
+
+        $object = $this->isBuildable($concrete, $abstract)
+            ? $this->build($concrete)
+            : $this->make($concrete);
+
+        if ($this->isShared($abstract) && !$needsContextualBuild) {
+            $this->instances[$abstract] = $object;
+        }
+
+        array_pop($this->parameterOverride);
+
+        return $object;
     }
 
     /**
@@ -230,6 +254,35 @@ class Container implements ContainerInterface, ArrayAccess
     }
 
     /**
+     * Determine if the given concrete is buildable.
+     *
+     * @param \Closure|string $concrete
+     * @param string          $abstract
+     *
+     * @return bool
+     */
+    protected function isBuildable($concrete, string $abstract): bool
+    {
+        return $concrete === $abstract || $concrete instanceof Closure;
+    }
+
+    /**
+     * Instantiate the given concrete type.
+     *
+     * @param \Closure|string $concrete
+     *
+     * @return \Object|string|int|array|bool
+     *
+     * @throws \Emberfuse\Container\Exception\BindingResolution
+     */
+    public function build($concrete)
+    {
+        if ($concrete instanceof Closure) {
+            return call_user_func_array($concrete, [$this]);
+        }
+    }
+
+    /**
      * Get the globally available instance of the container.
      *
      * @return \Psr\Container\ContainerInterface|static
@@ -238,13 +291,9 @@ class Container implements ContainerInterface, ArrayAccess
     {
         // Determine if a globally available instance of the
         // service container is available to access.
-        if (is_null(static::$instance)) {
-            // If not, make new instance and set self as instance.
-            static::makeInstance(new static());
-        }
-
+        // If not, make new instance and set self as instance.
         // Return globally available instance of the container.
-        return static::$instance;
+        return static::$instance ?? static::makeInstance(new static());
     }
 
     /**
